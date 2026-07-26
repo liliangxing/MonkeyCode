@@ -46,6 +46,10 @@ jobs:
             sed -i "s|$OLD_PKG_PATH|$NEW_PKG_PATH|g" "$f"
           done
 
+          # Debug: show BuildConfig.smali content after replacement
+          echo "=== BuildConfig.smali content ==="
+          find decompiled/smali* -path "*/BuildConfig.smali" -exec echo "--- {} ---" \; -exec cat {} \;
+
           # 3. Move smali source directories to new package path
           for smali_dir in decompiled/smali*; do
             if [ -d "$smali_dir/$OLD_PKG_PATH" ]; then
