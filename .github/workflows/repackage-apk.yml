@@ -31,15 +31,30 @@ jobs:
         run: |
           OLD_PKG="com.chaitin.baizhi.monkeycode"
           NEW_PKG="com.chaitin.baizhi.monkeycode2"
+          OLD_PKG_PATH="com/chaitin/baizhi/monkeycode"
+          NEW_PKG_PATH="com/chaitin/baizhi/monkeycode2"
 
           echo "Changing package name: $OLD_PKG -> $NEW_PKG"
 
+          # 1. AndroidManifest.xml - both dot and slash forms
           sed -i "s|$OLD_PKG|$NEW_PKG|g" decompiled/AndroidManifest.xml
+          sed -i "s|$OLD_PKG_PATH|$NEW_PKG_PATH|g" decompiled/AndroidManifest.xml
 
+          # 2. Smali file content - replace both dot and slash forms
           find decompiled/smali* -type f -name "*.smali" | while read f; do
             sed -i "s|$OLD_PKG|$NEW_PKG|g" "$f"
+            sed -i "s|$OLD_PKG_PATH|$NEW_PKG_PATH|g" "$f"
           done
 
+          # 3. Move smali source directories to new package path
+          for smali_dir in decompiled/smali*; do
+            if [ -d "$smali_dir/$OLD_PKG_PATH" ]; then
+              mkdir -p "$(dirname "$smali_dir/$NEW_PKG_PATH")"
+              mv "$smali_dir/$OLD_PKG_PATH" "$smali_dir/$NEW_PKG_PATH"
+            fi
+          done
+
+          # 4. Resources
           find decompiled/res -type f | while read f; do
             sed -i "s|$OLD_PKG|$NEW_PKG|g" "$f" 2>/dev/null || true
           done
