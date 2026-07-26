@@ -36,19 +36,20 @@ jobs:
 
           echo "Changing package name: $OLD_PKG -> $NEW_PKG"
 
-          # 1. AndroidManifest.xml - both dot and slash forms
-          sed -i "s|$OLD_PKG|$NEW_PKG|g" decompiled/AndroidManifest.xml
-          sed -i "s|$OLD_PKG_PATH|$NEW_PKG_PATH|g" decompiled/AndroidManifest.xml
+          # 1. AndroidManifest.xml
+          sed -i "s|${OLD_PKG//./\\.}|$NEW_PKG|g" decompiled/AndroidManifest.xml
 
-          # 2. Smali file content - replace both dot and slash forms
+          # 2. Smali file content - slash form only (sed . matches / in regex!)
           find decompiled/smali* -type f -name "*.smali" | while read f; do
-            sed -i "s|$OLD_PKG|$NEW_PKG|g" "$f"
-            sed -i "s|$OLD_PKG_PATH|$NEW_PKG_PATH|g" "$f"
+            sed -i "s|${OLD_PKG_PATH}|${NEW_PKG_PATH}|g" "$f"
           done
 
-          # Debug: show BuildConfig.smali content after replacement
-          echo "=== BuildConfig.smali content ==="
-          find decompiled/smali* -path "*/BuildConfig.smali" -exec echo "--- {} ---" \; -exec cat {} \;
+          # Debug: show BuildConfig.smali after replacement
+          echo "=== BuildConfig.smali ==="
+          find decompiled/smali* -path "*/BuildConfig.smali" | head -3 | while read f; do
+            echo "--- $f ---"
+            head -5 "$f"
+          done
 
           # 3. Move smali source directories to new package path
           for smali_dir in decompiled/smali*; do
@@ -58,9 +59,9 @@ jobs:
             fi
           done
 
-          # 4. Resources
+          # 4. Resources - escape dots in pattern
           find decompiled/res -type f | while read f; do
-            sed -i "s|$OLD_PKG|$NEW_PKG|g" "$f" 2>/dev/null || true
+            sed -i "s|${OLD_PKG//./\\.}|$NEW_PKG|g" "$f" 2>/dev/null || true
           done
 
           echo "Package name change complete"
