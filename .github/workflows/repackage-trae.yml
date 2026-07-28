@@ -1,0 +1,92 @@
+name: Repackage Trae APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  repackage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Trae APK
+        run: |
+          curl -sL -o trae.apk \
+            "https://lf9-apk.ugapk.cn/package/apk/trae_solo_cn/23722_20/trae_solo_cn_65533815a_v23722_20_8ec2_1785116417.apk?v=1785116418"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Download apktool
+        run: |
+          curl -sL -o apktool.jar \
+            "https://github.com/iBotPeaches/Apktool/releases/download/v2.10.0/apktool_2.10.0.jar"
+
+      - name: Decompile APK
+        run: |
+          java -jar apktool.jar d -f trae.apk -o decompiled
+
+      - name: Change package name
+        run: |
+          OLD_PKG="com.bytedance.trae.cn"
+          NEW_PKG="com.bytedance.trae.cn2"
+          OLD_PKG_PATH="com/bytedance/trae/cn"
+          NEW_PKG_PATH="com/bytedance/trae/cn2"
+
+          echo "Changing: $OLD_PKG -> $NEW_PKG"
+
+          # AndroidManifest.xml - escape dots in regex
+          sed -i "s|${OLD_PKG//./\\.}|$NEW_PKG|g" decompiled/AndroidManifest.xml
+
+          # Smali files - slash form only
+          find decompiled/smali* -type f -name "*.smali" | while read f; do
+            sed -i "s|${OLD_PKG_PATH}|${NEW_PKG_PATH}|g" "$f"
+          done
+
+          # Move smali source directories
+          for smali_dir in decompiled/smali*; do
+            if [ -d "$smali_dir/$OLD_PKG_PATH" ]; then
+              mkdir -p "$(dirname "$smali_dir/$NEW_PKG_PATH")"
+              mv "$smali_dir/$OLD_PKG_PATH" "$smali_dir/$NEW_PKG_PATH"
+            fi
+          done
+
+          # Resources
+          find decompiled/res -type f | while read f; do
+            sed -i "s|${OLD_PKG//./\\.}|$NEW_PKG|g" "$f" 2>/dev/null || true
+          done
+
+          echo "Package name change complete"
+
+      - name: Rebuild APK
+        run: |
+          java -jar apktool.jar b decompiled -o trae-repackaged.apk
+
+      - name: Sign APK
+        run: |
+          keytool -genkey -v \
+            -keystore release.keystore \
+            -alias release \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass android \
+            -keypass android \
+            -dname "CN=trae, OU=Dev, O=Trae, L=Beijing, ST=Beijing, C=CN"
+
+          curl -sL -o uber-apk-signer.jar \
+            "https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar"
+
+          java -jar uber-apk-signer.jar \
+            --apks trae-repackaged.apk \
+            --ks release.keystore \
+            --ksAlias release \
+            --ksKeyPass android \
+            --ksPass android
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Trae-repackaged
+          path: trae-repackaged-aligned-signed.apk
