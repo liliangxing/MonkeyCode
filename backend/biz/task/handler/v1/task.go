@@ -22,6 +22,7 @@ import (
 	"github.com/chaitin/MonkeyCode/backend/middleware"
 	"github.com/chaitin/MonkeyCode/backend/pkg/acp"
 	"github.com/chaitin/MonkeyCode/backend/pkg/loki"
+	"github.com/chaitin/MonkeyCode/backend/pkg/relay"
 	"github.com/chaitin/MonkeyCode/backend/pkg/taskflow"
 	"github.com/chaitin/MonkeyCode/backend/pkg/ws"
 )
@@ -376,6 +377,22 @@ func (h *TaskHandler) stream(c *web.Context, user *domain.User, task *domain.Tas
 				}
 				chunk.Timestamp = l.Timestamp.UnixMilli()
 				chunks = append(chunks, chunk)
+
+				// 账号接力: 检测额度耗尽错误，异步触发接力
+				if chunk.Event == string(consts.TaskStreamTypeError) {
+					errMsg := string(chunk.Data)
+					if relay.IsQuotaExhausted(errMsg) {
+						logger.WarnContext(ctx, "quota exhaustion detected, triggering relay",
+							"task_id", task.ID, "error", errMsg)
+						go func(taskID uuid.UUID, msg string) {
+							relayCtx := context.WithoutCancel(ctx)
+							if err := h.usecase.RelayTask(relayCtx, taskID, msg); err != nil {
+								logger.ErrorContext(relayCtx, "relay task failed",
+									"task_id", taskID, "error", err)
+							}
+						}(task.ID, errMsg)
+					}
+				}
 			}
 
 			if err := aggregator.Process(chunks); err != nil {

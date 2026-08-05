@@ -41,6 +41,7 @@ type Config struct {
 	LLM         LLM         `mapstructure:"llm"`
 	Notify      Notify      `mapstructure:"notify"`
 	VMIdle      VMIdle      `mapstructure:"vm_idle"`
+	Relay       Relay       `mapstructure:"relay"`
 
 	// Context7 API 配置
 	Context7ApiKey string `mapstructure:"context7_api_key"`
@@ -115,6 +116,15 @@ type VMIdle struct {
 	RecycleSeconds int `mapstructure:"recycle_seconds"` // VM 空闲回收时间（秒）
 }
 
+// Relay 账号接力配置
+type Relay struct {
+	Enabled               bool `mapstructure:"enabled"`                  // 是否启用账号接力
+	TokenWarningThreshold int  `mapstructure:"token_warning_threshold"`  // token 预警阈值 (百分比)
+	ContextTTL            int  `mapstructure:"context_ttl"`              // 上下文保存时间 (秒)
+	MaxRelayCount         int  `mapstructure:"max_relay_count"`          // 最大接力次数
+	CooldownSeconds       int  `mapstructure:"cooldown_seconds"`         // 额度耗尽后账号冷却时间 (秒)
+}
+
 type Session struct {
 	ExpireDay int `mapstructure:"expire_day"`
 }
@@ -166,6 +176,11 @@ func Init(dir string) (*Config, error) {
 	v.SetDefault("redis.db", 0)
 	v.SetDefault("vm_idle.sleep_seconds", 600)
 	v.SetDefault("vm_idle.recycle_seconds", 604800)
+	v.SetDefault("relay.enabled", true)
+	v.SetDefault("relay.token_warning_threshold", 80)
+	v.SetDefault("relay.context_ttl", 3600)
+	v.SetDefault("relay.max_relay_count", 5)
+	v.SetDefault("relay.cooldown_seconds", 3600)
 	v.SetDefault("init_team.email", "")
 	v.SetDefault("init_team.name", "")
 	v.SetDefault("init_team.password", "")

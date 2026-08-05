@@ -26,6 +26,8 @@ type TaskUsecase interface {
 	Cancel(ctx context.Context, user *User, id uuid.UUID) error
 	AutoApprove(ctx context.Context, user *User, id uuid.UUID, approve bool) error
 	GitTask(ctx context.Context, id uuid.UUID) (*GitTask, error)
+	// RelayTask 执行账号接力: 当检测到额度耗尽时，保存上下文并切换到下一个账号
+	RelayTask(ctx context.Context, taskID uuid.UUID, errMsg string) error
 }
 
 // TaskRepo 任务数据访问接口

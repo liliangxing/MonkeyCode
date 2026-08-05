@@ -564,6 +564,8 @@ type CreateTaskReq struct {
 	SystemPrompt string            `json:"system_prompt,omitempty"`
 	Text         string            `json:"text,omitempty"`
 	LLM          LLM               `json:"llm,omitzero"`
+	// LLMList 备用 LLM 配置列表 (账号接力: 当主 LLM 额度耗尽时自动切换)
+	LLMList      []LLM             `json:"llm_list,omitempty"`
 	CodingAgent  CodingAgent       `json:"coding_agent,omitempty"`
 	Configs      []ConfigFile      `json:"configs,omitzero"`
 	McpConfigs   []McpServerConfig `json:"mcp_configs,omitzero"`
