@@ -4,11 +4,14 @@ import android.app.Activity;
 import android.content.ContentValues;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -30,9 +33,14 @@ import android.widget.Toast;
 
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -44,9 +52,26 @@ public class MainActivity extends Activity {
     private WebView webView;
     private View errorView;
     private View fabButton;
+    private TextView tvQuota;
+    private View quotaOverlay;
+    private TextView tvQuotaBig;
+    private long lastWarningShownAt = 0L;
     private boolean isExporting = false;
 
+    private static final String SERVER_URL = "https://monkeycode-ai.com";
     private static final String DEFAULT_SERVER_URL = "https://monkeycode-ai.com/console/";
+    private static final long QUOTA_POLL_INTERVAL_MS = 10_000L;
+    private static final double QUOTA_WARNING_THRESHOLD_M = 3.0;
+    private static final long WARNING_COOLDOWN_MS = 60_000L;
+
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Runnable quotaPollRunnable = new Runnable() {
+        @Override
+        public void run() {
+            fetchQuota();
+            mainHandler.postDelayed(this, QUOTA_POLL_INTERVAL_MS);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -77,6 +102,9 @@ public class MainActivity extends Activity {
 
         fabButton = createFabButton();
         root.addView(fabButton);
+
+        quotaOverlay = createQuotaOverlay();
+        root.addView(quotaOverlay);
 
         setContentView(root);
 
@@ -112,6 +140,7 @@ public class MainActivity extends Activity {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 view.evaluateJavascript(buildCaptureScript(), null);
+                startQuotaPolling();
             }
 
             @Override
@@ -133,38 +162,174 @@ public class MainActivity extends Activity {
     // ==================== FAB Button ====================
 
     private View createFabButton() {
-        TextView btn = new TextView(this);
-        int size = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 48, getResources().getDisplayMetrics());
+        LinearLayout container = new LinearLayout(this);
+        container.setOrientation(LinearLayout.VERTICAL);
+        container.setGravity(Gravity.CENTER);
+
+        int width = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 56, getResources().getDisplayMetrics());
+        int height = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 84, getResources().getDisplayMetrics());
         int marginSide = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 16, getResources().getDisplayMetrics());
         // Move up 160dp to clear the input box + panel buttons row
         int marginBottom = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 160, getResources().getDisplayMetrics());
 
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(size, size);
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(width, height);
         params.gravity = Gravity.BOTTOM | Gravity.END;
         params.setMargins(0, 0, marginSide, marginBottom);
-        btn.setLayoutParams(params);
+        container.setLayoutParams(params);
 
         GradientDrawable bg = new GradientDrawable();
         bg.setShape(GradientDrawable.RECTANGLE);
-        bg.setCornerRadius(size / 2f);
+        bg.setCornerRadius(width / 2f);
         bg.setColor(0xE6404040);
-        btn.setBackground(bg);
+        container.setBackground(bg);
 
-        btn.setText("导出");
-        btn.setTextColor(Color.WHITE);
-        btn.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
-        btn.setGravity(Gravity.CENTER);
-        btn.setClickable(true);
-        btn.setFocusable(true);
+        TextView tvExport = new TextView(this);
+        tvExport.setText("导出");
+        tvExport.setTextColor(Color.WHITE);
+        tvExport.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12);
+        tvExport.setGravity(Gravity.CENTER);
 
-        btn.setOnClickListener(v -> onExportClick());
+        tvQuota = new TextView(this);
+        tvQuota.setText("--");
+        tvQuota.setTextColor(Color.WHITE);
+        // 额度文字字号是"导出"的两倍
+        tvQuota.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 24);
+        tvQuota.setGravity(Gravity.CENTER);
+        tvQuota.setTypeface(Typeface.DEFAULT_BOLD);
 
-        btn.setOnLongClickListener(v -> {
+        container.addView(tvExport);
+        container.addView(tvQuota);
+
+        container.setClickable(true);
+        container.setFocusable(true);
+
+        container.setOnClickListener(v -> onExportClick());
+
+        container.setOnLongClickListener(v -> {
             showToast("导出当前会话的用户消息到 Markdown 文件");
             return true;
         });
 
-        return btn;
+        return container;
+    }
+
+    // ==================== Quota Polling ====================
+
+    private void startQuotaPolling() {
+        mainHandler.removeCallbacks(quotaPollRunnable);
+        mainHandler.post(quotaPollRunnable);
+    }
+
+    private void stopQuotaPolling() {
+        mainHandler.removeCallbacks(quotaPollRunnable);
+    }
+
+    private void fetchQuota() {
+        new Thread(() -> {
+            HttpURLConnection conn = null;
+            try {
+                URL url = new URL(SERVER_URL + "/api/v1/users/wallet");
+                conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("GET");
+                conn.setConnectTimeout(8000);
+                conn.setReadTimeout(8000);
+                conn.setRequestProperty("Accept", "application/json");
+                String cookie = CookieManager.getInstance().getCookie(SERVER_URL);
+                if (cookie != null && !cookie.isEmpty()) {
+                    conn.setRequestProperty("Cookie", cookie);
+                }
+                int code = conn.getResponseCode();
+                if (code == HttpURLConnection.HTTP_OK) {
+                    InputStream is = conn.getInputStream();
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+                    StringBuilder sb = new StringBuilder();
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        sb.append(line);
+                    }
+                    reader.close();
+                    JSONObject data = new JSONObject(sb.toString()).optJSONObject("data");
+                    if (data != null) {
+                        final long remain = data.optLong("daily_token_balance", 0L);
+                        runOnUiThread(() -> updateQuota(remain));
+                    }
+                }
+            } catch (Exception e) {
+                // 静默失败，等下一次轮询重试
+            } finally {
+                if (conn != null) {
+                    conn.disconnect();
+                }
+            }
+        }).start();
+    }
+
+    private void updateQuota(long remainTokens) {
+        double m = remainTokens / 1_000_000.0;
+        if (tvQuota != null) {
+            tvQuota.setText(String.format(Locale.getDefault(), "%.1fM", m));
+        }
+        if (m <= QUOTA_WARNING_THRESHOLD_M) {
+            showQuotaWarning(m);
+        } else {
+            hideQuotaWarning();
+        }
+    }
+
+    // ==================== Quota Warning Overlay ====================
+
+    private View createQuotaOverlay() {
+        FrameLayout overlay = new FrameLayout(this);
+        overlay.setLayoutParams(new FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+        ));
+        overlay.setBackgroundColor(0x99000000);
+        overlay.setVisibility(View.GONE);
+        overlay.setOnClickListener(v -> overlay.setVisibility(View.GONE));
+
+        tvQuotaBig = new TextView(this);
+        tvQuotaBig.setTextColor(Color.WHITE);
+        // 大字提示字号是"导出"字号的 8 倍
+        tvQuotaBig.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 96);
+        tvQuotaBig.setTypeface(Typeface.DEFAULT_BOLD);
+        tvQuotaBig.setGravity(Gravity.CENTER);
+        tvQuotaBig.setShadowLayer(8, 2, 2, 0xAA000000);
+
+        int top = (int) (getResources().getDisplayMetrics().heightPixels * 0.25f);
+        int textHalf = (int) (TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 48, getResources().getDisplayMetrics()));
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        );
+        lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+        lp.topMargin = Math.max(top - textHalf, 0);
+        overlay.addView(tvQuotaBig, lp);
+
+        return overlay;
+    }
+
+    private void showQuotaWarning(double m) {
+        long now = System.currentTimeMillis();
+        if (quotaOverlay == null || tvQuotaBig == null) {
+            return;
+        }
+        if (quotaOverlay.getVisibility() == View.VISIBLE) {
+            tvQuotaBig.setText(String.format(Locale.getDefault(), "额度剩余 %.1fM", m));
+            return;
+        }
+        if (now - lastWarningShownAt < WARNING_COOLDOWN_MS) {
+            return;
+        }
+        lastWarningShownAt = now;
+        tvQuotaBig.setText(String.format(Locale.getDefault(), "额度剩余 %.1fM", m));
+        quotaOverlay.setVisibility(View.VISIBLE);
+    }
+
+    private void hideQuotaWarning() {
+        if (quotaOverlay != null && quotaOverlay.getVisibility() == View.VISIBLE) {
+            quotaOverlay.setVisibility(View.GONE);
+        }
     }
 
     private void onExportClick() {
@@ -733,6 +898,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        stopQuotaPolling();
         webView.destroy();
         super.onDestroy();
     }
